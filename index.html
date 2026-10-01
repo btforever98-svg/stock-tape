@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tape Stock Count</title>
+<style>
+:root{--bg:#f3f5f8;--card:#fff;--ink:#1c2430;--mut:#6b7684;--line:#dfe3e9;--acc:#1f6feb;--ok:#138a4b;--warn:#b26b00;--bad:#c62828;--chip:#eef3fb}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 "Segoe UI","Noto Sans Thai",Tahoma,sans-serif}
+header{position:sticky;top:0;z-index:5;background:#16325c;color:#fff;padding:10px 14px}
+header .row{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+header h1{font-size:17px;margin:0}
+header small{opacity:.85;font-size:12.5px}
+main{max-width:720px;margin:0 auto;padding:12px 12px 120px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.card h2{font-size:16px;margin:0 0 10px;display:flex;align-items:center;gap:8px}
+.card h2 .n{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--acc);color:#fff;font-size:14px}
+label{display:block;font-size:13px;color:var(--mut);margin:8px 0 4px}
+input,select,textarea{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink)}
+select{appearance:auto}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+button{font:inherit;border:0;border-radius:10px;padding:12px 14px;background:var(--chip);color:var(--acc);font-weight:600;cursor:pointer}
+button.pri{background:var(--acc);color:#fff}
+button.big{width:100%;padding:15px;font-size:17px}
+button.sm{padding:7px 10px;font-size:14px}
+button.danger{color:var(--bad);background:#fdecec}
+button:disabled{opacity:.5}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:14.5px}
+.kv b{font-weight:600}
+.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12.5px;font-weight:600}
+.tag.ok{background:#e3f5ea;color:var(--ok)} .tag.bad{background:#fdecec;color:var(--bad)} .tag.warn{background:#fff3df;color:var(--warn)}
+.photo{display:flex;gap:10px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:8px;margin-top:8px}
+.photo canvas{width:96px;height:96px;object-fit:cover;border-radius:8px;background:#ddd;flex:none}
+.photo .info{flex:1;min-width:0}
+.photo .cnt{font-size:22px;font-weight:700}
+.cart{border:1px dashed #b9c3d1;border-radius:10px;padding:10px;margin-top:10px}
+.muted{color:var(--mut);font-size:13.5px}
+.err{color:var(--bad);font-size:14px}
+.banner{padding:10px 12px;border-radius:10px;margin-bottom:12px;font-size:14px}
+.banner.warn{background:#fff3df;color:#6b4200}.banner.bad{background:#fdecec;color:#7d1a1a}
+.sum{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);padding:10px 12px calc(10px + env(safe-area-inset-bottom));z-index:6}
+.sum .in{max-width:720px;margin:0 auto;display:flex;gap:10px;align-items:center}
+.sum .in div{flex:1;font-size:13.5px}
+.busy{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;place-items:center;z-index:20;color:#fff;font-size:18px}
+.busy.on{display:grid}
+#ed{position:fixed;inset:0;background:#111;z-index:15;display:none;flex-direction:column}
+#ed.on{display:flex}
+#ed .bar{display:flex;gap:8px;align-items:center;padding:8px;background:#222;color:#fff;flex-wrap:wrap}
+#ed .bar .c{font-size:20px;font-weight:700;margin-right:auto}
+#ed .wrap{flex:1;overflow:auto;-webkit-overflow-scrolling:touch}
+#ed canvas{display:block;touch-action:manipulation}
+#ed .hint{color:#ccc;font-size:13px;padding:6px 10px;background:#1a1a1a}
+table.res{width:100%;border-collapse:collapse;font-size:14.5px}
+table.res td{padding:5px 4px;border-bottom:1px solid var(--line)} table.res td:last-child{text-align:right;font-variant-numeric:tabular-nums}
+table.res tr.t td{font-weight:700;border-top:2px solid var(--ink)}
+.lgrp{margin-top:14px}
+.lgrp-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.lgrp-h b{font-size:14px}
+.lgrp-h .cnt2{font-size:12.5px;color:var(--mut)}
+.bar2{height:5px;border-radius:3px;background:#e7ebf0;overflow:hidden;margin-bottom:8px}
+.bar2 i{display:block;height:100%;background:var(--ok);border-radius:3px}
+.chips{display:grid;grid-template-columns:repeat(auto-fill,minmax(58px,1fr));gap:6px}
+.chip{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 0;text-align:center;font-size:13.5px;font-weight:600;color:#3b4654;cursor:pointer;user-select:none}
+.chip.done{background:#e3f5ea;border-color:#b7e1c7;color:var(--ok)}
+.chip.done::before{content:"✔ ";font-size:11px}
+.chip.cur{outline:2px solid var(--acc);outline-offset:1px}
+.chip.bad{border-color:#f3b8b8}
+.legend{display:flex;gap:12px;margin-top:10px;font-size:12px;color:var(--mut)}
+.legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;vertical-align:-1px;border:1px solid var(--line);background:#fff}
+.legend span.d::before{background:#e3f5ea;border-color:#b7e1c7}
+.legend span.b::before{border-color:#e57373}
+.chip.bad{border-color:#e57373}
+</style>
+</head>
+<body>
+<header>
+  <div class="row"><h1>📦 Tape Stock Count</h1><small id="hdrDate"></small></div>
+  <div class="row"><small id="hdrSync"></small><small id="hdrPlan"></small></div>
+</header>
+<main>
+  <div id="banners"></div>
+
+  <div class="card" id="loginCard">
+    <h2>Counter</h2>
+    <div class="grid2">
+      <div><label>Name</label><input id="reporter" placeholder="Your name"></div>
+      <div id="pinWrap"><label>PIN</label><input id="pin" type="password" inputmode="numeric" placeholder="PIN"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Select loom</h2>
+    <select id="machine"><option value="">— Select loom —</option></select>
+    <div id="doneList"></div>
+  </div>
+
+  <div id="form" style="display:none">
+    <div class="card" id="mCard"></div>
+
+    <div class="card">
+      <h2><span class="n">④</span>Bobbins on loom rack <span class="tag warn">Weft</span></h2>
+      <div class="muted">Shoot straight on, all bobbin ends visible · do not include bobbins feeding the loom at the back</div>
+      <div id="loomList"></div>
+      <button class="big" style="margin-top:10px" onclick="addPhoto('loom')">📷 Photo of loom rack</button>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">②</span>Warp cart (Xe 1)</h2>
+      <div id="cart_warpList"></div>
+      <button class="big" style="margin-top:10px" onclick="addCart('cart_warp')">＋ Add warp cart</button>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">⑤</span>Weft cart (Xe 2)</h2>
+      <div id="cart_weftList"></div>
+      <button class="big" style="margin-top:10px" onclick="addCart('cart_weft')">＋ Add weft cart</button>
+    </div>
+
+    <div class="card">
+      <h2><span class="n">⑥</span>Floor / basket <span class="tag warn">Weft</span></h2>
+      <div class="muted">Enter number of bobbins (leave blank if none)</div>
+      <div class="grid3">
+        <div><label>Full</label><input id="flFull" type="number" min="0" inputmode="numeric"></div>
+        <div><label>Half</label><input id="flHalf" type="number" min="0" inputmode="numeric"></div>
+        <div><label>Low</label><input id="flLow" type="number" min="0" inputmode="numeric"></div>
+      </div>
+      <label>Note</label><input id="note" placeholder="(optional)">
+    </div>
+
+    <div class="card" id="resCard" style="display:none"></div>
+  </div>
+</main>
+
+<div class="sum" id="sumBar" style="display:none"><div class="in">
+  <div id="sumTxt"></div>
+  <button class="pri" id="saveBtn" onclick="save()">💾 Save</button>
+</div></div>
+
+<div id="ed">
+  <div class="bar">
+    <span class="c" id="edCount">0</span>
+    <button class="sm" onclick="edZoom(1/1.4)">－</button>
+    <button class="sm" onclick="edZoom(1.4)">＋</button>
+    <button class="sm" onclick="edUndo()">↶ Undo</button>
+    <button class="sm pri" onclick="edClose()">Done</button>
+  </div>
+  <div class="hint">Tap <b>a circle</b> = remove · tap <b>an unmarked bobbin</b> = add · ＋ to zoom</div>
+  <div class="wrap" id="edWrap"><canvas id="edCv"></canvas></div>
+</div>
+<div class="busy" id="busy"><div id="busyTxt">Processing…</div></div>
+<input type="file" id="fileIn" accept="image/*" capture="environment" style="display:none">
+<script src="demo.js"></script>
+<script src="lib/ort.wasm.min.js"></script>
+<script src="lib/tess/tesseract.min.js"></script>
+<script src="app.js"></script>
+
+</body>
+</html>
