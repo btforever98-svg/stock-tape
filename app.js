@@ -2,7 +2,7 @@
  *  Tape Stock Count — runs entirely on the phone (AI counting + label reading + calculation)
  *  Setup: put the Apps Script Web app URL (ending in /exec) on the line below
  * ===================================================================== */
-const API_URL = 'https://script.google.com/macros/s/AKfycbxMBuBhTnEJITKQe_7zt05faNLFZOZGs3klvY61N5INKpnZ4YXE0nEko8ITzY-vS-Fo/exec';                 // ← empty = DEMO mode (sample data, nothing is saved)
+const API_URL = '';                 // ← empty = DEMO mode (sample data, nothing is saved)
 const DAY_CHANGE_HOUR = 12;         // saved before noon = counts for yesterday (night shift 19:00–07:00)
 const MODEL_URL = 'model.onnx';
 const CACHE = 'stocktape-v1';
@@ -151,7 +151,8 @@ const OCR = {
 async function apiGet(params){
   const u = API_URL + '?' + new URLSearchParams({...params, token: $('pin').value});
   let r; try { r = await fetch(u); } catch(e){ throw new Error('Cannot reach Google — check internet connection'); }
-  const j = await r.json(); if(!j.ok) throw new Error(j.error); return j;
+  let j; try { j = await r.json(); } catch(e){ throw new Error('Google did not return data — check the Web app is deployed with "Who has access: Anyone"'); }
+  if(!j.ok) throw new Error(j.error || 'Unknown error from Google'); return j;
 }
 async function apiPost(body){
   // no Content-Type header (avoids CORS preflight) — Apps Script reads e.postData.contents
@@ -197,6 +198,7 @@ function updateHeader(pending = PENDING){
 function render(){
   updateHeader();
   const b = [];
+  if(location.protocol === 'file:') b.push(['bad', 'Opened as a local file (file://) — the AI cannot load this way. Open the web link (GitHub Pages, https://…) instead.']);
   if(!CFG.machines.length) b.push(['bad', 'No plan yet — waiting for the plan file from the LINE group']);
   else if(CFG.plan_updated && CFG.plan_updated < CFG.date) b.push(['warn', `Latest plan is dated ${thDate(CFG.plan_updated)} — you can continue, the latest plan will be used`]);
   $('banners').innerHTML = b.map(([c, t]) => `<div class="banner ${c}">${t}</div>`).join('');
@@ -417,13 +419,11 @@ function showResult(r, old){
 /* ------------------------- start ------------------------- */
 $('reporter').value = store.get('reporter') || ''; $('pin').value = store.get('pin') || '';
 $('reporter').onchange = e => store.set('reporter', e.target.value);
-$('pin').onchange = e => { store.set('pin', e.target.value); loadConfig().catch(err => banner(err.message)); };
+$('pin').onchange = e => { store.set('pin', e.target.value); loadConfig().then(() => { Outbox.flush(); AI.load().catch(() => {}); }).catch(err => banner(err.message)); };
 if(DEMO_MODE) $('pinWrap').style.display = 'none';
 function banner(t){ $('banners').innerHTML = `<div class="banner bad">${t}</div>`; }
 async function boot(){
-  if(location.protocol === 'file:'){
-    banner('This page was opened as a local file (file://). The AI cannot load this way — open it from the web link (GitHub Pages / https://…) instead.');
-  }
+  if(!DEMO_MODE && !$('pin').value){ updateHeader(0); banner('Enter your name and PIN to start (PIN is in the Google Sheet → Settings tab → pin).'); return; }
   try { await loadConfig(); }
   catch(err){
     const c = store.get('cfg_cache');
