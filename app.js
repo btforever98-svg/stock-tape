@@ -2,7 +2,7 @@
  *  Tape Stock Count — runs entirely on the phone (AI counting + label reading + calculation)
  *  Setup: put the Apps Script Web app URL (ending in /exec) on the line below
  * ===================================================================== */
-const API_URL = '';                 // ← empty = DEMO mode (sample data, nothing is saved)
+   const API_URL = window.STOCKTAPE_API || 'https://script.google.com/macros/s/AKfycbw1YMu_Z3GuToFq17nrzfN-9WPWx3MzGYem1U9ETYcpoUYGl7gtXs6X9sFpmOOxGMpIvA/exec';
 const DAY_CHANGE_HOUR = 12;         // saved before noon = counts for yesterday (night shift 19:00–07:00)
 const MODEL_URL = 'model.onnx';
 const CACHE = 'stocktape-v1';
