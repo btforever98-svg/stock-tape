@@ -1,8 +1,8 @@
 /* =====================================================================
  *  Tape Stock Count — runs entirely on the phone (AI counting + label reading + calculation)
- *  Setup: put the Apps Script Web app URL (ending in /exec) on the line below
+ *  Setup: put the Apps Script Web app URL (ending in /exec) in config.js  (not in this file)
  * ===================================================================== */
-   const API_URL = window.STOCKTAPE_API || 'https://script.google.com/macros/s/AKfycbw1YMu_Z3GuToFq17nrzfN-9WPWx3MzGYem1U9ETYcpoUYGl7gtXs6X9sFpmOOxGMpIvA/exec';
+const API_URL = (window.STOCKTAPE_API || '').trim();   // from config.js · empty = DEMO mode (sample data, nothing is saved)
 const DAY_CHANGE_HOUR = 12;         // saved before noon = counts for yesterday (night shift 19:00–07:00)
 const MODEL_URL = 'model.onnx';
 const CACHE = 'stocktape-v1';
@@ -25,11 +25,21 @@ const thDate = iso => iso ? iso.split('-').reverse().join('/') : '-';
 /* ------------------------- formulas ------------------------- */
 const specKey = (den, tw) => `${Math.round(+den)}/${(+tw).toFixed(1)}`;
 function parseSku(text){
-  const s = String(text || '').replace(/\s/g, '').toUpperCase().replace(/O/g, '0');
+  const s = String(text || '').replace(/\s/g, '').toUpperCase().replace(/O/g, '0').replace(/W[IL|\\]/g, 'W1');
   const m = s.match(/W1\d{13}/); if(!m) return null;
   const sku = m[0], n = +sku.slice(7, 10);
   const denier = n < 640 ? n * 10 : n, tw = +sku.slice(10, 12) / 10;   // lowest Denier in the plant is 640
   return {sku, denier, tw, spec: specKey(denier, tw)};
+}
+/* label text → Net weight (kg) and Length (number of bobbins, "Ống") */
+function parseLabel(text){
+  const t = String(text || '').replace(/\r/g, ''), fix = v => v.replace(/[Oo]/g, '0').replace(/[Il|]/g, '1').replace(',', '.');
+  let kg = null, qty = null;
+  let m = t.match(/N[e3]t\s*w[a-z]*\W{0,3}\s*([0-9OoIl|.,]{1,7})\s*k\s*g/i);
+  if(m){ const v = parseFloat(fix(m[1])); if(v > 0 && v < 3000) kg = v; }
+  m = t.match(/L[e3]ngth\W{0,3}\s*(\d{1,4}?)\s*[O0Ô][nN]/i);
+  if(m){ const v = +m[1]; if(v > 0 && v < 2000) qty = v; }
+  return {kg, qty};
 }
 const Calc = {
   fullKg(spec, kind){ const r = CFG.specs[spec]; return r ? r.denier * (kind === 'warp' ? r.warp_len : r.weft_len) / 9e6 : null; },
@@ -143,15 +153,17 @@ const OCR = {
     let pallet = '';
     try { if('BarcodeDetector' in window){ const b = await new BarcodeDetector({formats: ['qr_code']}).detect(await createImageBitmap(blob));
       if(b[0]) pallet = b[0].rawValue; } } catch(e){}
-    return {p: parseSku(data.text), pallet};
+    return {p: parseSku(data.text), pallet, ...parseLabel(data.text)};
   }
 };
 
 /* ------------------------- API (Google Apps Script) ------------------------- */
 async function apiGet(params){
   const u = API_URL + '?' + new URLSearchParams({...params, token: $('pin').value});
-  let r; try { r = await fetch(u); } catch(e){ throw new Error('Cannot reach Google — check internet connection'); }
-  let j; try { j = await r.json(); } catch(e){ throw new Error('Google did not return data — check the Web app is deployed with "Who has access: Anyone"'); }
+  let r; try { r = await fetch(u); } catch(e){ throw new Error('Cannot reach Google — check internet connection, and that config.js has the correct /exec URL'); }
+  const txt = await r.text();
+  let j; try { j = JSON.parse(txt); } catch(e){
+    throw new Error(`Google did not return data (HTTP ${r.status}) — check the Web app is deployed with "Who has access: Anyone" and config.js has the /exec URL. Reply starts: ${txt.slice(0, 120)}`); }
   if(!j.ok) throw new Error(j.error || 'Unknown error from Google'); return j;
 }
 async function apiPost(body){
@@ -280,16 +292,32 @@ function addCart(place){ R.photos.push({place, circles: [], sku: '', spec: ''});
 function cartLabel(i){
   pick(async f => {
     busy(true, 'Reading label…');
-    const im = await shrink(f, 2000), {p, pallet} = await OCR.read(im.blob);
-    if(!p){ alert('Could not read the SKU — take a closer, sharper photo or type the SKU'); return; }
-    setSku(i, p, pallet);
+    const im = await shrink(f, 2000), r = await OCR.read(im.blob), c = R.photos[i];
+    c.label_blob = (await shrink(f, 1200)).blob;          // label photo is kept as proof of the weight
+    if(r.p) Object.assign(c, {sku: r.p.sku, spec: r.p.spec});
+    if(r.pallet) c.pallet = r.pallet;
+    if(r.kg != null) c.label_kg = r.kg;
+    if(r.qty != null) c.label_qty = r.qty;
+    c.label_read = true; renderPhotos();
+    const miss = [!r.p && 'SKU', r.kg == null && 'Net weight', r.qty == null && 'Length (bobbins)'].filter(Boolean);
+    if(miss.length) alert('Could not read: ' + miss.join(', ') + ' — type it from the label, or retake a straighter, sharper photo');
   });
 }
-function cartSkuText(i, v){ const p = parseSku(v); if(!p){ alert('Invalid SKU format (W + 14 digits)'); return; } setSku(i, p); }
-function setSku(i, p, pallet){ Object.assign(R.photos[i], {sku: p.sku, spec: p.spec, pallet: pallet || R.photos[i].pallet || ''}); renderPhotos(); }
+const reRender = () => setTimeout(renderPhotos, 0);   // re-render after the input's blur/change has finished
+function cartSkuText(i, v){ v = v.trim(); if(!v){ Object.assign(R.photos[i], {sku: '', spec: ''}); reRender(); return; }
+  const p = parseSku(v); if(!p){ alert('Invalid SKU format (W + 14 digits)'); reRender(); return; }
+  Object.assign(R.photos[i], {sku: p.sku, spec: p.spec}); reRender(); }
+function cartNum(i, k, v){ const n = parseFloat(String(v).replace(',', '.')); R.photos[i][k] = n > 0 ? n : null; reRender(); }
 function cartPile(i){
-  if(!R.photos[i].spec){ alert('Scan the label / enter the SKU first'); return; }
   pick(async f => { Object.assign(R.photos[i], await runDetect(f)); renderPhotos(); openEditor(i); });
+}
+function cartPileDel(i){ const c = R.photos[i]; Object.assign(c, {url: null, blob: null, circles: [], ai_count: 0}); renderPhotos(); }
+/* weight of a cart: label Net weight ALWAYS first; photo estimate only if the label weight is missing */
+function cartKg(p, kind){
+  const ph = p.url && p.spec ? Calc.photo(p.circles, p.spec, kind) : null;
+  if(p.label_kg > 0) return {kg: p.label_kg, source: 'label', photo: ph};
+  if(ph && ph.kg != null) return {kg: ph.kg, source: 'photo', photo: ph};
+  return {kg: null, source: '', photo: ph};
 }
 function delPhoto(i){ if(confirm('Delete this item?')){ R.photos.splice(i, 1); renderPhotos(); } }
 
@@ -308,21 +336,33 @@ function renderPhotos(){
       const th = p.url ? `<canvas id="th${i}" width="192" height="192" onclick="openEditor(${i})"></canvas>` : '';
       const cnt = p.url ? `<div class="cnt">${p.circles.length} bobbins</div><div class="muted">AI counted ${p.ai_count} · tap photo to edit</div>` : '';
       if(place === 'loom') return `<div class="photo">${th}<div class="info">${cnt}</div><button class="sm danger" onclick="delPhoto(${i})">Delete</button></div>`;
-      const ok = p.spec && CFG.specs[p.spec];
+      const ok = p.spec && CFG.specs[p.spec], w = cartKg(p, place === 'cart_warp' ? 'warp' : 'weft');
+      const src = w.source === 'label' ? '<span class="tag ok">From label</span>'
+        : w.source === 'photo' ? '<span class="tag warn">Photo estimate (no label weight)</span>' : '<span class="tag bad">No weight yet</span>';
+      const cmp = w.source === 'label' && w.photo && w.photo.kg != null
+        ? `<div class="muted">Photo check: ${w.photo.count} bobbins ≈ ${fmt(w.photo.kg)} kg (reference only — label weight is used)</div>` : '';
       return `<div class="cart"><div style="display:flex;justify-content:space-between;align-items:center">
           <b>Cart ${k + 1}</b><button class="sm danger" onclick="delPhoto(${i})">Delete</button></div>
-        <label>SKU on label</label>
-        <div style="display:flex;gap:8px"><input value="${p.sku || ''}" placeholder="W10000108525501" inputmode="text" onchange="cartSkuText(${i}, this.value)">
-          <button class="sm" onclick="cartLabel(${i})">📷 Label</button></div>
-        ${p.spec ? `<div class="specbig">${p.spec.replace('/', 'D / ')} mm ${ok ? '<span class="tag ok">✔</span>' : '<span class="tag bad">Not in table</span>'}</div>
-          <div class="muted">Check it matches the label${p.pallet ? ' · Pallet ' + p.pallet : ''}</div>` : ''}
-        ${p.url ? `<div class="photo">${th}<div class="info">${cnt}</div></div>` : ''}
-        <button class="big" style="margin-top:8px" onclick="cartPile(${i})">📷 ${p.url ? 'Retake bobbin photo' : 'Photo of bobbins'}</button></div>`;
+        <button class="big" style="margin-top:8px" onclick="cartLabel(${i})">📷 ${p.label_read ? 'Rescan label' : 'Scan label'}</button>
+        <div class="lblgrid">
+          <label>Net weight (kg)<input type="number" inputmode="decimal" value="${p.label_kg ?? ''}" placeholder="342" onchange="cartNum(${i}, 'label_kg', this.value)"></label>
+          <label>Length (bobbins)<input type="number" inputmode="numeric" value="${p.label_qty ?? ''}" placeholder="260" onchange="cartNum(${i}, 'label_qty', this.value)"></label>
+        </div>
+        <label>SKU</label>
+        <input value="${p.sku || ''}" placeholder="W10000108525501" inputmode="text" onchange="cartSkuText(${i}, this.value)">
+        ${p.spec ? `<div class="muted">Spec ${p.spec.replace('/', 'D / ')} mm ${ok ? '' : '· not in spec table'}${p.pallet ? ' · Pallet ' + p.pallet : ''}</div>` : (p.pallet ? `<div class="muted">Pallet ${p.pallet}</div>` : '')}
+        <div class="kgbig">${w.kg == null ? '– kg' : fmt(w.kg) + ' kg'} ${src}</div>${cmp}
+        <details${p.url ? ' open' : ''}><summary>Bobbin photo (optional)</summary>
+          ${p.url ? `<div class="photo">${th}<div class="info">${cnt}</div><button class="sm danger" onclick="cartPileDel(${i})">Remove</button></div>` : ''}
+          <button class="sm" style="margin-top:6px" onclick="cartPile(${i})">📷 ${p.url ? 'Retake bobbin photo' : 'Take bobbin photo'}</button>
+          <div class="muted">Not needed when the label has Net weight. Use it for a cart without a label or for checking.</div>
+        </details></div>`;
     }).join('');
   }
   R.photos.forEach((p, i) => p.url && drawThumb(i));
   const c = pl => R.photos.filter(p => p.place === pl).reduce((a, p) => a + p.circles.length, 0);
-  $('sumTxt').textContent = `${R.machine} · rack ${c('loom')} · warp cart ${c('cart_warp')} · weft cart ${c('cart_weft')} bobbins`;
+  const n = pl => R.photos.filter(p => p.place === pl).length;
+  $('sumTxt').textContent = `${R.machine} · rack ${c('loom')} bobbins · warp carts ${n('cart_warp')} · weft carts ${n('cart_weft')}`;
 }
 
 /* ------------------------- circle editor ------------------------- */
@@ -357,12 +397,19 @@ const b64 = blob => new Promise(r => { const fr = new FileReader(); fr.onload = 
 function compute(m, floor){
   const warn = [], [creel_qty, creel] = Calc.creel(m), parts = {creel, shuttle: Calc.shuttle(m), cart_warp: 0, loom: 0, cart_weft: 0, floor: 0};
   if(!CFG.specs[m.spec]) warn.push(`Loom spec ${m.spec} is not in the spec table — ①③④⑥ not calculated`);
+  const r2 = v => v == null ? null : +(+v).toFixed(2);
   const photos = R.photos.map(p => {
-    const kind = p.place === 'cart_warp' ? 'warp' : 'weft', spec = p.place === 'loom' ? m.spec : p.spec;
-    const r = Calc.photo(p.circles, spec, kind);
-    if(r.kg == null) warn.push(`Photo ${p.place}: spec ${spec} is not in the spec table — no weight calculated`); else parts[p.place] += r.kg;
-    return {place: p.place, sku: p.sku || '', pallet: p.pallet || '', spec, ai_count: p.ai_count, count: r.count,
-            equiv_full: +r.equiv_full.toFixed(2), kg: r.kg == null ? null : +r.kg.toFixed(2), bins: r.bins};
+    const kind = p.place === 'cart_warp' ? 'warp' : 'weft';
+    if(p.place === 'loom'){
+      const r = Calc.photo(p.circles, m.spec, kind);
+      if(r.kg == null) warn.push(`Loom rack photo: spec ${m.spec} is not in the spec table — no weight calculated`); else parts.loom += r.kg;
+      return {place: p.place, spec: m.spec, ai_count: p.ai_count, count: r.count, equiv_full: r2(r.equiv_full), kg: r2(r.kg), bins: r.bins, kg_source: 'photo'};
+    }
+    const w = cartKg(p, kind), ph = w.photo;
+    if(w.kg == null) warn.push(`${p.place === 'cart_warp' ? 'Warp' : 'Weft'} cart ${p.pallet || p.sku || ''}: no weight`); else parts[p.place] += w.kg;
+    return {place: p.place, sku: p.sku || '', pallet: p.pallet || '', spec: p.spec || '', ai_count: p.url ? p.ai_count : '',
+            count: ph ? ph.count : '', equiv_full: ph ? r2(ph.equiv_full) : '', kg: r2(w.kg), bins: ph ? ph.bins : [],
+            kg_source: w.source, label_kg: p.label_kg ?? '', label_qty: p.label_qty ?? '', photo_kg: ph ? r2(ph.kg) : ''};
   });
   parts.floor = Calc.floor(m, floor) || 0;
   const warp = (parts.creel || 0) + parts.cart_warp, weft = (parts.shuttle || 0) + parts.loom + parts.cart_weft + parts.floor;
@@ -373,7 +420,8 @@ function compute(m, floor){
 async function save(){
   if(!$('reporter').value.trim()){ alert('Enter your name first'); $('reporter').focus(); return; }
   if(!DEMO_MODE && !$('pin').value){ alert('Enter PIN first'); $('pin').focus(); return; }
-  if(R.photos.some(p => p.place !== 'loom' && (!p.spec || !p.url))){ alert('Some carts have no SKU or no bobbin photo yet'); return; }
+  const noW = R.photos.findIndex(p => p.place !== 'loom' && !(p.label_kg > 0) && !(p.url && p.spec));
+  if(noW >= 0){ alert('A cart has no weight yet — scan the label (or type Net weight). Without a label: enter SKU and take a bobbin photo.'); return; }
   const m = CFG.machines.find(x => x.id === R.machine);
   const floor = {full: +$('flFull').value || 0, half: +$('flHalf').value || 0, low: +$('flLow').value || 0};
   const c = compute(m, floor);
@@ -388,6 +436,7 @@ async function save(){
     } else {
       const photos = await Promise.all(R.photos.map(async (p, i) => ({...c.photos[i],
         image: p.blob ? await b64(p.blob) : null,
+        label_image: p.label_blob ? await b64(p.label_blob) : null,
         circles: p.circles.map(q => [Math.round(q.x), Math.round(q.y), Math.round(q.r * 10) / 10, q.core ? Math.round(q.core * 10) / 10 : 0])})));
       const body = {action: 'saveReport', token: $('pin').value, ...report, photos};
       const k = `${report.date}|${report.machine}`;
@@ -419,9 +468,9 @@ function showResult(r, old){
 /* ------------------------- start ------------------------- */
 $('reporter').value = store.get('reporter') || ''; $('pin').value = store.get('pin') || '';
 $('reporter').onchange = e => store.set('reporter', e.target.value);
-$('pin').onchange = e => { store.set('pin', e.target.value); loadConfig().then(() => { Outbox.flush(); AI.load().catch(() => {}); }).catch(err => banner(err.message)); };
+$('pin').onchange = e => { store.set('pin', e.target.value); loadConfig().then(() => { Outbox.flush(); AI.load().catch(() => {}); }).catch(err => banner((err && (err.message || String(err))) || 'Unknown error')); };
 if(DEMO_MODE) $('pinWrap').style.display = 'none';
-function banner(t){ $('banners').innerHTML = `<div class="banner bad">${t}</div>`; }
+function banner(t){ const d = document.createElement('div'); d.className = 'banner bad'; d.textContent = t || 'Unknown error'; $('banners').replaceChildren(d); }
 async function boot(){
   if(!DEMO_MODE && !$('pin').value){ updateHeader(0); banner('Enter your name and PIN to start (PIN is in the Google Sheet → Settings tab → pin).'); return; }
   try { await loadConfig(); }
@@ -429,7 +478,7 @@ async function boot(){
     const c = store.get('cfg_cache');
     if(c){ const j = JSON.parse(c); CFG = {settings: j.settings, specs: Object.fromEntries(j.specs.map(r => [specKey(r.denier, r.tw), r])),
       machines: j.machines, plan_updated: j.plan_updated, done: {}, date: reportDate()}; render(); banner('Offline — using last saved data: ' + err.message); }
-    else banner(err.message + (DEMO_MODE ? '' : ' (check your PIN)'));
+    else banner((err && (err.message || String(err))) || 'Unknown error');
   }
   Outbox.flush().catch(() => {});
   setTimeout(() => AI.load().catch(() => {}), 1500);   // preload AI
