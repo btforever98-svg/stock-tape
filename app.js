@@ -26,18 +26,19 @@ const thDate = iso => iso ? iso.split('-').reverse().join('/') : '-';
 const specKey = (den, tw) => `${Math.round(+den)}/${(+tw).toFixed(1)}`;
 function parseSku(text){
   const s = String(text || '').replace(/\s/g, '').toUpperCase().replace(/O/g, '0').replace(/W[IL|\\]/g, 'W1');
-  const m = s.match(/W1\d{13}/); if(!m) return null;
-  const sku = m[0], n = +sku.slice(7, 10);
-  const denier = n < 640 ? n * 10 : n, tw = +sku.slice(10, 12) / 10;   // lowest Denier in the plant is 640
-  return {sku, denier, tw, spec: specKey(denier, tw)};
+  for(const m of s.matchAll(/W1\d{13}/g)){                   // first candidate whose Denier / T.W. make sense
+    const sku = m[0], n = +sku.slice(7, 10);
+    const denier = n < 640 ? n * 10 : n, tw = +sku.slice(10, 12) / 10;   // lowest Denier in the plant is 640
+    if(denier >= 640 && denier <= 3000 && tw >= 1 && tw <= 8) return {sku, denier, tw, spec: specKey(denier, tw)};
+  }
+  return null;
 }
-/* label text → Net weight (kg) and Length (number of bobbins, "Ống") */
+/* label text → Net weight (the only number followed by "kg") and Length (the number followed by "Ống") */
 function parseLabel(text){
-  const t = String(text || '').replace(/\r/g, ''), fix = v => v.replace(/[Oo]/g, '0').replace(/[Il|]/g, '1').replace(',', '.');
-  let kg = null, qty = null;
-  let m = t.match(/N[e3]t\s*w[a-z]*\W{0,3}\s*([0-9OoIl|.,]{1,7})\s*k\s*g/i);
-  if(m){ const v = parseFloat(fix(m[1])); if(v > 0 && v < 3000) kg = v; }
-  m = t.match(/L[e3]ngth\W{0,3}\s*(\d{1,4}?)\s*[O0Ô][nN]/i);
+  const t = String(text || '');
+  let kg = null, qty = null, m = t.match(/(\d{1,4}(?:[.,]\d{1,2})?)\s*k\s*g(?![a-z])/i);
+  if(m){ const v = parseFloat(m[1].replace(',', '.')); if(v > 0 && v < 3000) kg = v; }
+  m = t.match(/(\d{1,4})\s*[OÔỐÓ0][nN][gG]/);
   if(m){ const v = +m[1]; if(v > 0 && v < 2000) qty = v; }
   return {kg, qty};
 }
@@ -145,15 +146,15 @@ function measureCores(bmp, dets){
 
 /* ------------------------- label SKU reader ------------------------- */
 const OCR = {
-  w: null,
-  async get(){ if(!this.w) this.w = Tesseract.createWorker('eng', 1, {workerPath: 'lib/tess/worker.min.js',
-    corePath: 'lib/tess/core/', langPath: 'lang', gzip: true}); return this.w; },
-  async read(blob){
-    const w = await this.get(), {data} = await w.recognize(blob);
+  async read(blob, onProgress){
+    await POCR.load(onProgress);
+    const bmp = await createImageBitmap(blob, {imageOrientation: 'from-image'});
     let pallet = '';
-    try { if('BarcodeDetector' in window){ const b = await new BarcodeDetector({formats: ['qr_code']}).detect(await createImageBitmap(blob));
+    try { if('BarcodeDetector' in window){ const b = await new BarcodeDetector({formats: ['qr_code']}).detect(bmp);
       if(b[0]) pallet = b[0].rawValue; } } catch(e){}
-    return {p: parseSku(data.text), pallet, ...parseLabel(data.text)};
+    const ok = t => { const l = parseLabel(t); return parseSku(t) && l.kg != null && l.qty != null; };
+    const text = await POCR.read(bmp, ok);
+    return {p: parseSku(text), pallet, ...parseLabel(text), text};
   }
 };
 
@@ -291,8 +292,8 @@ function addPhoto(place){ pick(async f => { R.photos.push({place, ...(await runD
 function addCart(place){ R.photos.push({place, circles: [], sku: '', spec: ''}); renderPhotos(); }
 function cartLabel(i){
   pick(async f => {
-    busy(true, 'Reading label…');
-    const im = await shrink(f, 2000), r = await OCR.read(im.blob), c = R.photos[i];
+    busy(true, POCR.rec ? 'Reading label…' : 'Loading label reader (first time only)…');
+    const r = await OCR.read(f, p => $('busyTxt').textContent = `Loading label reader ${Math.round(p * 100)}% (first time only)`), c = R.photos[i];
     c.label_blob = (await shrink(f, 1200)).blob;          // label photo is kept as proof of the weight
     if(r.p) Object.assign(c, {sku: r.p.sku, spec: r.p.spec});
     if(r.pallet) c.pallet = r.pallet;
@@ -344,6 +345,7 @@ function renderPhotos(){
       return `<div class="cart"><div style="display:flex;justify-content:space-between;align-items:center">
           <b>Cart ${k + 1}</b><button class="sm danger" onclick="delPhoto(${i})">Delete</button></div>
         <button class="big" style="margin-top:8px" onclick="cartLabel(${i})">📷 ${p.label_read ? 'Rescan label' : 'Scan label'}</button>
+        ${p.label_read ? '' : '<div class="muted">Tip: get close so the label fills most of the photo · avoid glare · at night turn on the flash</div>'}
         <div class="lblgrid">
           <label>Net weight (kg)<input type="number" inputmode="decimal" value="${p.label_kg ?? ''}" placeholder="342" onchange="cartNum(${i}, 'label_kg', this.value)"></label>
           <label>Length (bobbins)<input type="number" inputmode="numeric" value="${p.label_qty ?? ''}" placeholder="260" onchange="cartNum(${i}, 'label_qty', this.value)"></label>
@@ -468,7 +470,7 @@ function showResult(r, old){
 /* ------------------------- start ------------------------- */
 $('reporter').value = store.get('reporter') || ''; $('pin').value = store.get('pin') || '';
 $('reporter').onchange = e => store.set('reporter', e.target.value);
-$('pin').onchange = e => { store.set('pin', e.target.value); loadConfig().then(() => { Outbox.flush(); AI.load().catch(() => {}); }).catch(err => banner((err && (err.message || String(err))) || 'Unknown error')); };
+$('pin').onchange = e => { store.set('pin', e.target.value); loadConfig().then(() => { Outbox.flush(); AI.load().then(() => POCR.load()).catch(() => {}); }).catch(err => banner((err && (err.message || String(err))) || 'Unknown error')); };
 if(DEMO_MODE) $('pinWrap').style.display = 'none';
 function banner(t){ const d = document.createElement('div'); d.className = 'banner bad'; d.textContent = t || 'Unknown error'; $('banners').replaceChildren(d); }
 async function boot(){
@@ -481,7 +483,7 @@ async function boot(){
     else banner((err && (err.message || String(err))) || 'Unknown error');
   }
   Outbox.flush().catch(() => {});
-  setTimeout(() => AI.load().catch(() => {}), 1500);   // preload AI
+  setTimeout(() => AI.load().then(() => POCR.load()).catch(() => {}), 1500);   // preload AI + label reader
 }
 window.addEventListener('online', () => Outbox.flush());
 setInterval(() => Outbox.flush().catch(() => {}), 60000);
