@@ -289,7 +289,10 @@ async function runDetect(file){
   return {blob: im.blob, url: im.url, w: im.w, h: im.h, circles, ai_count: circles.length};
 }
 function addPhoto(place){ pick(async f => { R.photos.push({place, ...(await runDetect(f))}); renderPhotos(); openEditor(R.photos.length - 1); }); }
-function addCart(place){ R.photos.push({place, circles: [], sku: '', spec: ''}); renderPhotos(); }
+let cartSeq = 0;
+function addCart(place){ R.photos.push({place, id: ++cartSeq, circles: [], sku: '', spec: ''}); renderPhotos(); }
+const SIDES = ['Side 1', 'Side 2'];                    // a cart holds bobbins on both sides → one photo per side
+const cartPics = p => R.photos.map((q, j) => [q, j]).filter(([q]) => q.place === 'cart_pic' && q.cart === p.id);
 function cartLabel(i){
   pick(async f => {
     busy(true, POCR.rec ? 'Reading label…' : 'Loading label reader (first time only)…');
@@ -309,18 +312,31 @@ function cartSkuText(i, v){ v = v.trim(); if(!v){ Object.assign(R.photos[i], {sk
   const p = parseSku(v); if(!p){ alert('Invalid SKU format (W + 14 digits)'); reRender(); return; }
   Object.assign(R.photos[i], {sku: p.sku, spec: p.spec}); reRender(); }
 function cartNum(i, k, v){ const n = parseFloat(String(v).replace(',', '.')); R.photos[i][k] = n > 0 ? n : null; reRender(); }
-function cartPile(i){
-  pick(async f => { Object.assign(R.photos[i], await runDetect(f)); renderPhotos(); openEditor(i); });
+function cartPile(i, side){
+  const cart = R.photos[i];
+  pick(async f => {
+    const d = await runDetect(f), ex = cartPics(cart).find(([q]) => q.side === side);
+    let j; if(ex){ j = ex[1]; Object.assign(R.photos[j], d); }
+    else { R.photos.push({place: 'cart_pic', cart: cart.id, side, of: cart.place, ...d}); j = R.photos.length - 1; }
+    renderPhotos(); openEditor(j);
+  });
 }
-function cartPileDel(i){ const c = R.photos[i]; Object.assign(c, {url: null, blob: null, circles: [], ai_count: 0}); renderPhotos(); }
+function cartPileDel(j){ R.photos.splice(j, 1); renderPhotos(); }
 /* weight of a cart: label Net weight ALWAYS first; photo estimate only if the label weight is missing */
 function cartKg(p, kind){
-  const ph = p.url && p.spec ? Calc.photo(p.circles, p.spec, kind) : null;
+  const pics = cartPics(p).map(([q]) => q).filter(q => q.url);
+  let ph = null;
+  if(pics.length && p.spec){                             // add up all sides
+    ph = {count: 0, equiv_full: 0, kg: 0, bins: [0,0,0,0,0,0], sides: pics.length};
+    for(const q of pics){ const r = Calc.photo(q.circles, p.spec, kind);
+      ph.count += r.count; ph.equiv_full += r.equiv_full; ph.kg = r.kg == null || ph.kg == null ? null : ph.kg + r.kg; r.bins.forEach((v, k) => ph.bins[k] += v); }
+  }
   if(p.label_kg > 0) return {kg: p.label_kg, source: 'label', photo: ph};
   if(ph && ph.kg != null) return {kg: ph.kg, source: 'photo', photo: ph};
   return {kg: null, source: '', photo: ph};
 }
-function delPhoto(i){ if(confirm('Delete this item?')){ R.photos.splice(i, 1); renderPhotos(); } }
+function delPhoto(i){ if(!confirm('Delete this item?')) return;
+  const p = R.photos[i]; R.photos = R.photos.filter(q => q !== p && !(q.place === 'cart_pic' && p.id && q.cart === p.id)); renderPhotos(); }
 
 const imgs = {};
 function getImg(url){ return imgs[url] ||= new Promise(res => { const im = new Image(); im.onload = () => res(im); im.src = url; }); }
@@ -337,11 +353,11 @@ function renderPhotos(){
       const th = p.url ? `<canvas id="th${i}" width="192" height="192" onclick="openEditor(${i})"></canvas>` : '';
       const cnt = p.url ? `<div class="cnt">${p.circles.length} bobbins</div><div class="muted">AI counted ${p.ai_count} · tap photo to edit</div>` : '';
       if(place === 'loom') return `<div class="photo">${th}<div class="info">${cnt}</div><button class="sm danger" onclick="delPhoto(${i})">Delete</button></div>`;
-      const ok = p.spec && CFG.specs[p.spec], w = cartKg(p, place === 'cart_warp' ? 'warp' : 'weft');
+      const ok = p.spec && CFG.specs[p.spec], w = cartKg(p, place === 'cart_warp' ? 'warp' : 'weft'), pics = cartPics(p);
       const src = w.source === 'label' ? '<span class="tag ok">From label</span>'
         : w.source === 'photo' ? '<span class="tag warn">Photo estimate (no label weight)</span>' : '<span class="tag bad">No weight yet</span>';
       const cmp = w.source === 'label' && w.photo && w.photo.kg != null
-        ? `<div class="muted">Photo check: ${w.photo.count} bobbins ≈ ${fmt(w.photo.kg)} kg (reference only — label weight is used)</div>` : '';
+        ? `<div class="muted">Photo check (${w.photo.sides} side${w.photo.sides > 1 ? 's' : ''}): ${w.photo.count} bobbins ≈ ${fmt(w.photo.kg)} kg (reference only — label weight is used)</div>` : '';
       return `<div class="cart"><div style="display:flex;justify-content:space-between;align-items:center">
           <b>Cart ${k + 1}</b><button class="sm danger" onclick="delPhoto(${i})">Delete</button></div>
         <button class="big" style="margin-top:8px" onclick="cartLabel(${i})">📷 ${p.label_read ? 'Rescan label' : 'Scan label'}</button>
@@ -354,15 +370,20 @@ function renderPhotos(){
         <input value="${p.sku || ''}" placeholder="W10000108525501" inputmode="text" onchange="cartSkuText(${i}, this.value)">
         ${p.spec ? `<div class="muted">Spec ${p.spec.replace('/', 'D / ')} mm ${ok ? '' : '· not in spec table'}${p.pallet ? ' · Pallet ' + p.pallet : ''}</div>` : (p.pallet ? `<div class="muted">Pallet ${p.pallet}</div>` : '')}
         <div class="kgbig">${w.kg == null ? '– kg' : fmt(w.kg) + ' kg'} ${src}</div>${cmp}
-        <details${p.url ? ' open' : ''}><summary>Bobbin photo (optional)</summary>
-          ${p.url ? `<div class="photo">${th}<div class="info">${cnt}</div><button class="sm danger" onclick="cartPileDel(${i})">Remove</button></div>` : ''}
-          <button class="sm" style="margin-top:6px" onclick="cartPile(${i})">📷 ${p.url ? 'Retake bobbin photo' : 'Take bobbin photo'}</button>
-          <div class="muted">Not needed when the label has Net weight. Use it for a cart without a label or for checking.</div>
+        <details${pics.length ? ' open' : ''}><summary>Bobbin photos (optional) · ${pics.length}/2 sides</summary>
+          <div class="muted">Not needed when the label has Net weight. Without a label: photograph <b>both sides</b> of the cart.</div>
+          ${SIDES.map(side => { const e = pics.find(([q]) => q.side === side);
+            if(!e) return `<button class="sm" style="margin:6px 6px 0 0" onclick="cartPile(${i}, '${side}')">📷 ${side}</button>`;
+            const [q, j] = e;
+            return `<div class="photo"><canvas id="th${j}" width="192" height="192" onclick="openEditor(${j})"></canvas>
+              <div class="info"><b>${side}</b><div class="cnt">${q.circles.length} bobbins</div><div class="muted">AI counted ${q.ai_count} · tap photo to edit</div>
+              <button class="sm" onclick="cartPile(${i}, '${side}')">Retake</button> <button class="sm danger" onclick="cartPileDel(${j})">Remove</button></div></div>`; }).join('')}
+          ${w.photo ? `<div class="muted" style="margin-top:6px">Both sides: <b>${w.photo.count}</b> bobbins${w.photo.kg != null ? ' ≈ ' + fmt(w.photo.kg) + ' kg' : ''}${pics.length < 2 ? ' — <span style="color:var(--warn)">only 1 side photographed</span>' : ''}</div>` : ''}
         </details></div>`;
     }).join('');
   }
   R.photos.forEach((p, i) => p.url && drawThumb(i));
-  const c = pl => R.photos.filter(p => p.place === pl).reduce((a, p) => a + p.circles.length, 0);
+  const c = pl => R.photos.filter(p => p.place === pl).reduce((a, p) => a + (p.circles || []).length, 0);
   const n = pl => R.photos.filter(p => p.place === pl).length;
   $('sumTxt').textContent = `${R.machine} · rack ${c('loom')} bobbins · warp carts ${n('cart_warp')} · weft carts ${n('cart_weft')}`;
 }
@@ -407,9 +428,16 @@ function compute(m, floor){
       if(r.kg == null) warn.push(`Loom rack photo: spec ${m.spec} is not in the spec table — no weight calculated`); else parts.loom += r.kg;
       return {place: p.place, spec: m.spec, ai_count: p.ai_count, count: r.count, equiv_full: r2(r.equiv_full), kg: r2(r.kg), bins: r.bins, kg_source: 'photo'};
     }
+    if(p.place === 'cart_pic'){                          // one side of a cart — reference data only, weight is counted on the cart
+      const cart = R.photos.find(q => q.id === p.cart) || {}, k2 = cart.place === 'cart_warp' ? 'warp' : 'weft';
+      const r = cart.spec ? Calc.photo(p.circles, cart.spec, k2) : null;
+      return {place: `${cart.place}_${p.side.replace(' ', '').toLowerCase()}`, sku: cart.sku || '', pallet: cart.pallet || '', spec: cart.spec || '',
+              ai_count: p.ai_count, count: p.circles.length, equiv_full: r ? r2(r.equiv_full) : '', kg: '', bins: r ? r.bins : [],
+              kg_source: 'side photo', photo_kg: r ? r2(r.kg) : ''};
+    }
     const w = cartKg(p, kind), ph = w.photo;
     if(w.kg == null) warn.push(`${p.place === 'cart_warp' ? 'Warp' : 'Weft'} cart ${p.pallet || p.sku || ''}: no weight`); else parts[p.place] += w.kg;
-    return {place: p.place, sku: p.sku || '', pallet: p.pallet || '', spec: p.spec || '', ai_count: p.url ? p.ai_count : '',
+    return {place: p.place, sku: p.sku || '', pallet: p.pallet || '', spec: p.spec || '', ai_count: ph ? cartPics(p).reduce((a, [q]) => a + (q.ai_count || 0), 0) : '',
             count: ph ? ph.count : '', equiv_full: ph ? r2(ph.equiv_full) : '', kg: r2(w.kg), bins: ph ? ph.bins : [],
             kg_source: w.source, label_kg: p.label_kg ?? '', label_qty: p.label_qty ?? '', photo_kg: ph ? r2(ph.kg) : ''};
   });
@@ -422,8 +450,11 @@ function compute(m, floor){
 async function save(){
   if(!$('reporter').value.trim()){ alert('Enter your name first'); $('reporter').focus(); return; }
   if(!DEMO_MODE && !$('pin').value){ alert('Enter PIN first'); $('pin').focus(); return; }
-  const noW = R.photos.findIndex(p => p.place !== 'loom' && !(p.label_kg > 0) && !(p.url && p.spec));
-  if(noW >= 0){ alert('A cart has no weight yet — scan the label (or type Net weight). Without a label: enter SKU and take a bobbin photo.'); return; }
+  const carts = R.photos.filter(p => p.place === 'cart_warp' || p.place === 'cart_weft');
+  if(carts.some(p => !(p.label_kg > 0) && !(p.spec && cartPics(p).length))){
+    alert('A cart has no weight yet — scan the label (or type Net weight). Without a label: enter SKU and photograph both sides.'); return; }
+  const oneSide = carts.filter(p => !(p.label_kg > 0) && cartPics(p).length < 2);
+  if(oneSide.length && !confirm(`${oneSide.length} cart(s) without a label weight have only 1 side photographed. Save anyway?`)) return;
   const m = CFG.machines.find(x => x.id === R.machine);
   const floor = {full: +$('flFull').value || 0, half: +$('flHalf').value || 0, low: +$('flLow').value || 0};
   const c = compute(m, floor);
@@ -439,7 +470,7 @@ async function save(){
       const photos = await Promise.all(R.photos.map(async (p, i) => ({...c.photos[i],
         image: p.blob ? await b64(p.blob) : null,
         label_image: p.label_blob ? await b64(p.label_blob) : null,
-        circles: p.circles.map(q => [Math.round(q.x), Math.round(q.y), Math.round(q.r * 10) / 10, q.core ? Math.round(q.core * 10) / 10 : 0])})));
+        circles: (p.circles || []).map(q => [Math.round(q.x), Math.round(q.y), Math.round(q.r * 10) / 10, q.core ? Math.round(q.core * 10) / 10 : 0])})));
       const body = {action: 'saveReport', token: $('pin').value, ...report, photos};
       const k = `${report.date}|${report.machine}`;
       await Outbox.put({k, body});
